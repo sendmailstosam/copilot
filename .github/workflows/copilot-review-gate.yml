@@ -1,0 +1,59 @@
+name: Copilot Review Gate
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  pull_request_review:
+    types: [submitted]
+
+jobs:
+  copilot-review-gate:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    steps:
+      - name: Check Copilot review status
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prNumber = context.payload.pull_request.number;
+
+            // Get all reviews on this PR
+            const { data: reviews } = await github.rest.pulls.listReviews({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber,
+            });
+
+            // Find Copilot's review
+            const copilotReview = reviews.find(
+              r => r.user.login === 'copilot-pull-request-review[bot]'
+            );
+
+            if (!copilotReview) {
+              core.setFailed('Waiting for Copilot code review to complete...');
+              return;
+            }
+
+            // Get all review comments on this PR
+            const { data: comments } = await github.rest.pulls.listReviewComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber,
+            });
+
+            // Filter to only Copilot's comments
+            const copilotComments = comments.filter(
+              c => c.user.login === 'copilot-pull-request-review[bot]'
+            );
+
+            if (copilotComments.length > 0) {
+              core.setFailed(
+                `Copilot found ${copilotComments.length} issue(s). Please address them before merging.`
+              );
+              for (const c of copilotComments) {
+                core.error(`${c.path}: ${c.body.substring(0, 200)}`);
+              }
+            } else {
+              core.info('Copilot review passed with no issues.');
+            }
