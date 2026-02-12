@@ -1,8 +1,6 @@
 name: Copilot Review Gate
 
 on:
-  pull_request:
-    types: [opened, synchronize, reopened]
   pull_request_review:
     types: [submitted]
 
@@ -12,59 +10,52 @@ jobs:
     permissions:
       pull-requests: read
     steps:
-      - name: Wait for Copilot review and check results
+      - name: Check Copilot review result
         uses: actions/github-script@v7
         with:
           script: |
+            const review = context.payload.review;
             const prNumber = context.payload.pull_request.number;
-            const headSha = context.payload.pull_request.head.sha;
-            const maxAttempts = 20;
-            const delaySeconds = 30;
 
-            core.info(`PR #${prNumber}, latest commit: ${headSha}`);
-
-            let copilotReview = null;
-
-            for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-              core.info(`Checking for Copilot review on latest commit... (attempt ${attempt}/${maxAttempts})`);
-
-              const { data: reviews } = await github.rest.pulls.listReviews({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                pull_number: prNumber,
-              });
-
-              // Find Copilot's review for the latest commit specifically
-              copilotReview = reviews.find(
-                r => r.user.type === 'Bot'
-                  && r.user.login.toLowerCase().includes('copilot')
-                  && r.commit_id === headSha
-              );
-
-              if (copilotReview) {
-                core.info(`Found Copilot review from: ${copilotReview.user.login} for commit ${headSha}`);
-                break;
-              }
-
-              if (attempt < maxAttempts) {
-                core.info(`Copilot hasn't reviewed commit ${headSha.substring(0, 7)} yet. Waiting ${delaySeconds}s...`);
-                await new Promise(resolve => setTimeout(resolve, delaySeconds * 1000));
-              }
-            }
-
-            if (!copilotReview) {
-              core.setFailed('Timed out waiting for Copilot code review on the latest commit.');
+            // Skip non-Copilot reviews with a neutral exit
+            if (
+              review.user.type !== 'Bot' ||
+              !review.user.login.toLowerCase().includes('copilot')
+            ) {
+              core.info(`Review by ${review.user.login} is not from Copilot — skipping.`);
               return;
             }
 
-            // Get all review comments on this PR
+            core.info(`Copilot review received on PR #${prNumber}.`);
+
+            // Fetch the current PR head SHA via API (not from the event payload)
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber,
+            });
+            const headSha = pr.head.sha;
+
+            core.info(`Current PR head SHA: ${headSha}`);
+            core.info(`Copilot review commit_id: ${review.commit_id}`);
+
+            // Fail if Copilot's review is for an outdated commit
+            if (review.commit_id !== headSha) {
+              core.setFailed(
+                `Copilot's review is for commit ${review.commit_id.substring(0, 7)}, ` +
+                `but the PR head is now ${headSha.substring(0, 7)}. ` +
+                `Please re-request Copilot review on the latest commit.`
+              );
+              return;
+            }
+
+            // Check for inline comments from Copilot on this commit
             const { data: comments } = await github.rest.pulls.listReviewComments({
               owner: context.repo.owner,
               repo: context.repo.repo,
               pull_number: prNumber,
             });
 
-            // Filter to Copilot's comments on the latest commit
             const copilotComments = comments.filter(
               c => c.user.type === 'Bot'
                 && c.user.login.toLowerCase().includes('copilot')
