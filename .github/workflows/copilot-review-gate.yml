@@ -12,26 +12,43 @@ jobs:
     permissions:
       pull-requests: read
     steps:
-      - name: Check Copilot review status
+      - name: Wait for Copilot review and check results
         uses: actions/github-script@v7
         with:
           script: |
             const prNumber = context.payload.pull_request.number;
+            const maxAttempts = 20;
+            const delaySeconds = 30;
 
-            // Get all reviews on this PR
-            const { data: reviews } = await github.rest.pulls.listReviews({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: prNumber,
-            });
+            let copilotReview = null;
 
-            // Find Copilot's review
-            const copilotReview = reviews.find(
-              r => r.user.login === 'copilot-pull-request-review[bot]'
-            );
+            for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+              core.info(`Checking for Copilot review... (attempt ${attempt}/${maxAttempts})`);
+
+              const { data: reviews } = await github.rest.pulls.listReviews({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: prNumber,
+              });
+
+              // Look for Copilot's review (match any login containing 'copilot')
+              copilotReview = reviews.find(
+                r => r.user.type === 'Bot' && r.user.login.toLowerCase().includes('copilot')
+              );
+
+              if (copilotReview) {
+                core.info(`Found Copilot review from: ${copilotReview.user.login}`);
+                break;
+              }
+
+              if (attempt < maxAttempts) {
+                core.info(`Copilot hasn't reviewed yet. Waiting ${delaySeconds}s...`);
+                await new Promise(resolve => setTimeout(resolve, delaySeconds * 1000));
+              }
+            }
 
             if (!copilotReview) {
-              core.setFailed('Waiting for Copilot code review to complete...');
+              core.setFailed('Timed out waiting for Copilot code review.');
               return;
             }
 
@@ -44,7 +61,7 @@ jobs:
 
             // Filter to only Copilot's comments
             const copilotComments = comments.filter(
-              c => c.user.login === 'copilot-pull-request-review[bot]'
+              c => c.user.type === 'Bot' && c.user.login.toLowerCase().includes('copilot')
             );
 
             if (copilotComments.length > 0) {
@@ -55,5 +72,5 @@ jobs:
                 core.error(`${c.path}: ${c.body.substring(0, 200)}`);
               }
             } else {
-              core.info('Copilot review passed with no issues.');
+              core.info('Copilot review passed with no issues!');
             }
