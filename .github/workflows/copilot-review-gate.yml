@@ -17,13 +17,16 @@ jobs:
         with:
           script: |
             const prNumber = context.payload.pull_request.number;
+            const headSha = context.payload.pull_request.head.sha;
             const maxAttempts = 20;
             const delaySeconds = 30;
+
+            core.info(`PR #${prNumber}, latest commit: ${headSha}`);
 
             let copilotReview = null;
 
             for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-              core.info(`Checking for Copilot review... (attempt ${attempt}/${maxAttempts})`);
+              core.info(`Checking for Copilot review on latest commit... (attempt ${attempt}/${maxAttempts})`);
 
               const { data: reviews } = await github.rest.pulls.listReviews({
                 owner: context.repo.owner,
@@ -31,24 +34,26 @@ jobs:
                 pull_number: prNumber,
               });
 
-              // Look for Copilot's review (match any login containing 'copilot')
+              // Find Copilot's review for the latest commit specifically
               copilotReview = reviews.find(
-                r => r.user.type === 'Bot' && r.user.login.toLowerCase().includes('copilot')
+                r => r.user.type === 'Bot'
+                  && r.user.login.toLowerCase().includes('copilot')
+                  && r.commit_id === headSha
               );
 
               if (copilotReview) {
-                core.info(`Found Copilot review from: ${copilotReview.user.login}`);
+                core.info(`Found Copilot review from: ${copilotReview.user.login} for commit ${headSha}`);
                 break;
               }
 
               if (attempt < maxAttempts) {
-                core.info(`Copilot hasn't reviewed yet. Waiting ${delaySeconds}s...`);
+                core.info(`Copilot hasn't reviewed commit ${headSha.substring(0, 7)} yet. Waiting ${delaySeconds}s...`);
                 await new Promise(resolve => setTimeout(resolve, delaySeconds * 1000));
               }
             }
 
             if (!copilotReview) {
-              core.setFailed('Timed out waiting for Copilot code review.');
+              core.setFailed('Timed out waiting for Copilot code review on the latest commit.');
               return;
             }
 
@@ -59,9 +64,11 @@ jobs:
               pull_number: prNumber,
             });
 
-            // Filter to only Copilot's comments
+            // Filter to Copilot's comments on the latest commit
             const copilotComments = comments.filter(
-              c => c.user.type === 'Bot' && c.user.login.toLowerCase().includes('copilot')
+              c => c.user.type === 'Bot'
+                && c.user.login.toLowerCase().includes('copilot')
+                && c.commit_id === headSha
             );
 
             if (copilotComments.length > 0) {
